@@ -9,7 +9,7 @@ from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from dotenv import load_dotenv
 
 import wordle_engine
@@ -30,80 +30,94 @@ dp = Dispatcher()
 
 # Define the FSM state group
 class WordleGame(StatesGroup):
-    waiting_for_guess = State()
+    playing = State()
 
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
     """
     This handler receives messages with the `/start` command
-    and displays the Play Wordle reply keyboard.
+    and displays the Play Wordle inline keyboard.
     """
-    kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="Play Wordle")]],
-        resize_keyboard=True
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Play Wordle", callback_data="play_wordle")]]
     )
     await message.answer("Welcome to Wordle Bot!", reply_markup=kb)
 
 
-@dp.message(F.text == "Play Wordle")
-async def play_wordle_handler(message: Message, state: FSMContext) -> None:
+@dp.callback_query(F.data == "play_wordle")
+async def play_wordle_handler(callback: CallbackQuery, state: FSMContext) -> None:
     """
     Handles the 'Play Wordle' button press.
     """
+    await callback.answer()
+    
     target_word = wordle_engine.get_random_word()
     
-    # Save the target word and initialize attempts counter
-    await state.update_data(target_word=target_word, attempts=0)
+    # Send the initial empty grid
+    grid_text = wordle_engine.generate_grid([], target_word)
+    sent_msg = await callback.message.answer(grid_text)
     
-    # Set the state to waiting_for_guess
-    await state.set_state(WordleGame.waiting_for_guess)
+    # Save the target word, empty guesses list, and the grid message id
+    await state.update_data(target_word=target_word, guesses=[], grid_message_id=sent_msg.message_id)
     
-    await message.answer("I have chosen a 5-letter word. Send me your first guess!")
+    # Set the state to playing
+    await state.set_state(WordleGame.playing)
 
 
-@dp.message(WordleGame.waiting_for_guess, F.text)
+@dp.message(WordleGame.playing, F.text)
 async def process_guess_handler(message: Message, state: FSMContext) -> None:
     """
-    Catches text messages only when the user is in the waiting_for_guess state.
+    Catches text messages when the user is playing Wordle.
     """
-    user_guess = message.text.upper()
+    # IMMEDIATELY delete the user's message to keep the chat clean
+    await message.delete()
     
-    if len(user_guess) != 5:
-        await message.answer("Please enter exactly 5 letters.")
+    user_guess = message.text.strip().upper()
+    
+    if len(user_guess) != 5 or not user_guess.isalpha():
+        temp_msg = await message.answer("⚠️ Send a 5-letter word")
+        await asyncio.sleep(3)
+        await temp_msg.delete()
         return
     
     # Retrieve the state data
     user_data = await state.get_data()
     target_word = user_data["target_word"]
-    attempts = user_data.get("attempts", 0)
+    guesses = user_data.get("guesses", [])
+    grid_message_id = user_data["grid_message_id"]
     
-    # Increment attempts and update state
-    attempts += 1
-    await state.update_data(attempts=attempts)
+    # Append guess
+    guesses.append(user_guess)
+    await state.update_data(guesses=guesses)
     
-    # Check the guess
-    result_emojis = wordle_engine.check_guess(target_word, user_guess)
+    # Generate the new grid string
+    grid_text = wordle_engine.generate_grid(guesses, target_word)
     
-    # Prepare the response
-    response = f"Your guess: {user_guess}\nResult: {result_emojis}\nAttempts: {attempts}/6"
+    game_over = False
     
-    kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="Play Wordle")]],
-        resize_keyboard=True
+    # Check win/loss condition
+    if user_guess == target_word:
+        grid_text += "\n\n🎉 Congratulations! You guessed the word!"
+        game_over = True
+    elif len(guesses) >= 6:
+        grid_text += f"\n\nGame Over! 😢 The word was {target_word}."
+        game_over = True
+        
+    reply_markup = None
+    if game_over:
+        await state.clear()
+        reply_markup = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Play Again", callback_data="play_wordle")]]
+        )
+        
+    # Edit the original grid message
+    await message.bot.edit_message_text(
+        text=grid_text,
+        chat_id=message.chat.id,
+        message_id=grid_message_id,
+        reply_markup=reply_markup
     )
-    
-    if result_emojis == "🟩🟩🟩🟩🟩":
-        response += "\n\n🎉 Congratulations! You guessed the word!\nPlay again?"
-        await state.clear()
-        await message.answer(response, reply_markup=kb)
-    elif attempts >= 6:
-        response += f"\n\nGame Over! 😢 The word was {target_word}.\nPlay again?"
-        await state.clear()
-        await message.answer(response, reply_markup=kb)
-    else:
-        response += "\n\nSend me your next guess!"
-        await message.answer(response)
 
 
 async def main() -> None:
