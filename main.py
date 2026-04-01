@@ -37,31 +37,70 @@ class WordleGame(StatesGroup):
 async def command_start_handler(message: Message) -> None:
     """
     This handler receives messages with the `/start` command
-    and displays the Play Wordle inline keyboard.
+    and asks the user to choose their language.
     """
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Play Wordle", callback_data="play_wordle")]]
+        inline_keyboard=[[
+            InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang_ru"),
+            InlineKeyboardButton(text="🇬🇧 English", callback_data="lang_en")
+        ]]
     )
-    await message.answer("Welcome to Wordle Bot!", reply_markup=kb)
+    await message.answer("Choose your language / Выберите язык:", reply_markup=kb)
 
 
-@dp.callback_query(F.data == "play_wordle")
-async def play_wordle_handler(callback: CallbackQuery, state: FSMContext) -> None:
+@dp.callback_query(F.data.startswith("lang_"))
+async def language_selection_handler(callback: CallbackQuery, state: FSMContext) -> None:
     """
-    Handles the 'Play Wordle' button press.
+    Handles the language selection buttons and asks for difficulty.
     """
     await callback.answer()
     
-    target_word = wordle_engine.get_random_word()
+    # Extract the language code ('ru' or 'en')
+    lang_code = callback.data.split("_")[1]
     
-    # Send the initial empty grid
+    # Save the selected language to FSM
+    await state.update_data(lang_code=lang_code)
+    
+    # Edit the message text and keyboard to ask for difficulty
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(text="🟢 Easy", callback_data="diff_easy"),
+            InlineKeyboardButton(text="🟡 Medium", callback_data="diff_medium"),
+            InlineKeyboardButton(text="🔴 Hard", callback_data="diff_hard")
+        ]]
+    )
+    await callback.message.edit_text("Choose difficulty: / Выберите сложность:", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("diff_"))
+async def difficulty_selection_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    """
+    Handles difficulty selection and starts the game.
+    """
+    await callback.answer()
+    
+    # Extract the difficulty
+    diff_code = callback.data.split("_")[1]
+    
+    # Save difficulty to FSM and retrieve language
+    await state.update_data(difficulty=diff_code)
+    user_data = await state.get_data()
+    lang_code = user_data.get("lang_code", "en")
+    
+    # Fetch the random target word
+    target_word = wordle_engine.get_random_word(lang_code, diff_code)
+    
+    # Send the initial empty grid by editing the current message
     grid_text = wordle_engine.generate_grid([], target_word)
-    sent_msg = await callback.message.answer(grid_text)
+    await callback.message.edit_text(grid_text)
     
-    # Save the target word, empty guesses list, and the grid message id
-    await state.update_data(target_word=target_word, guesses=[], grid_message_id=sent_msg.message_id)
+    # Save the target word, guesses, and message id
+    await state.update_data(
+        target_word=target_word, 
+        guesses=[], 
+        grid_message_id=callback.message.message_id
+    )
     
-    # Set the state to playing
+    # Transition to the playing state
     await state.set_state(WordleGame.playing)
 
 
@@ -75,17 +114,25 @@ async def process_guess_handler(message: Message, state: FSMContext) -> None:
     
     user_guess = message.text.strip().upper()
     
-    if len(user_guess) != 5 or not user_guess.isalpha():
-        temp_msg = await message.answer("⚠️ Send a 5-letter word")
-        await asyncio.sleep(3)
-        await temp_msg.delete()
-        return
-    
-    # Retrieve the state data
+    # Retrieve the state data first to get the lang_code
     user_data = await state.get_data()
+    lang_code = user_data.get("lang_code", "en")
     target_word = user_data["target_word"]
     guesses = user_data.get("guesses", [])
     grid_message_id = user_data["grid_message_id"]
+
+    if len(user_guess) != 5:
+        temp_msg = await message.answer("⚠️ Send exactly 5 letters")
+        await asyncio.sleep(3)
+        await temp_msg.delete()
+        return
+        
+    # Validate the word against the language dictionary
+    if not wordle_engine.is_valid_word(user_guess, lang_code):
+        temp_msg = await message.answer("⚠️ This word is not in the dictionary! Type a real word.")
+        await asyncio.sleep(3)
+        await temp_msg.delete()
+        return
     
     # Append guess
     guesses.append(user_guess)
@@ -98,17 +145,23 @@ async def process_guess_handler(message: Message, state: FSMContext) -> None:
     
     # Check win/loss condition
     if user_guess == target_word:
-        grid_text += "\n\n🎉 Congratulations! You guessed the word!"
+        msg = "🎉 Congratulations! You guessed the word!" if lang_code == 'en' else "🎉 Поздравляем! Вы отгадали слово!"
+        grid_text += f"\n\n{msg}"
         game_over = True
     elif len(guesses) >= 6:
-        grid_text += f"\n\nGame Over! 😢 The word was {target_word}."
+        msg = f"Game Over! 😢 The word was {target_word}." if lang_code == 'en' else f"Игра окончена! 😢 Слово было {target_word}."
+        grid_text += f"\n\n{msg}"
         game_over = True
         
     reply_markup = None
     if game_over:
         await state.clear()
+        # Offer to play again by choosing a language
         reply_markup = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Play Again", callback_data="play_wordle")]]
+            inline_keyboard=[[
+                InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang_ru"),
+                InlineKeyboardButton(text="🇬🇧 English", callback_data="lang_en")
+            ]]
         )
         
     # Edit the original grid message

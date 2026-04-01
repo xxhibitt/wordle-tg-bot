@@ -1,18 +1,50 @@
 import random
 
-# A predefined short list of 5-letter English words
-WORD_LIST = [
-    "APPLE", "TRAIN", "HOUSE", "MOUSE", "SMILE", "CRANE", "SLATE",
-    "TRACK", "BEACH", "GHOST", "BLAME", "PLANT", "WATER", "BOARD",
-    "STONE", "HEART", "NIGHT", "LIGHT", "DREAM", "GREEN", "BLACK",
-    "WORLD", "SWORD", "MAGIC", "PIZZA", "AUDIO", "VIDEO", "CHAIR"
-]
+def load_words(language_code: str, difficulty: str) -> list[str]:
+    """
+    Reads the specific difficulty file (e.g. en_easy.txt) and returns a list of words.
+    """
+    filename = f"{language_code}_{difficulty}.txt"
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            return [line.strip().upper() for line in f if line.strip()]
+    except FileNotFoundError:
+        print(f"Warning: dictionary {filename} not found.")
+        return []
 
-def get_random_word() -> str:
+def get_random_word(language_code: str, difficulty: str = "easy") -> str:
     """
-    Returns a random 5-letter word from the predefined list.
+    Uses load_words to pick a random target word for the given language and difficulty.
     """
-    return random.choice(WORD_LIST).upper()
+    words = load_words(language_code, difficulty)
+    if not words:
+        # Fallback in case dictionary is missing
+        return "APPLE" if language_code == 'en' else "СЛОВО"
+    return random.choice(words).upper()
+
+# Cache for master word lists to prevent reloading files on every guess
+_master_words_cache = {}
+
+def get_master_word_list(language_code: str) -> set[str]:
+    """
+    Loads all words from easy, medium, and hard files for a language into a single set.
+    """
+    if language_code in _master_words_cache:
+        return _master_words_cache[language_code]
+        
+    master_set = set()
+    for diff in ["easy", "medium", "hard"]:
+        master_set.update(load_words(language_code, diff))
+        
+    _master_words_cache[language_code] = master_set
+    return master_set
+
+def is_valid_word(guess: str, language_code: str) -> bool:
+    """
+    Checks if the user's guess exists in ANY of the difficulty dictionaries for that language.
+    """
+    master_set = get_master_word_list(language_code)
+    return guess.upper() in master_set
 
 def check_word(guess: str, target_word: str) -> list[str]:
     """
@@ -46,29 +78,29 @@ def check_word(guess: str, target_word: str) -> list[str]:
     return result
 
 def generate_grid(guesses: list, target_word: str) -> str:
-    """
-    Generates the visual grid for the Wordle game.
-    Always exactly 5 columns and 6 rows.
-    """
-    rows = []
+    # Используем \u2003 (Em Space) - он визуально равен ширине эмодзи
+    wide_space = "\u2003" 
+    grid_lines = []
     
+    # Отрисовываем уже введенные слова
     for guess in guesses:
-        # First line: letters separated by full-width spaces, wrapped in <code>
-        letters = "\u2003".join(list(guess.upper()))
-        rows.append(f"<code>{letters}</code>")
+        # Разбиваем слово на буквы и вставляем широкие пробелы
+        spaced_letters = wide_space.join(list(guess.upper()))
+        # Оборачиваем в моноширинный тег
+        grid_lines.append(f"<code>{spaced_letters}</code>")
         
-        # Second line: emoji feedback aligned directly under the letters
-        emojis = " ".join(check_word(guess, target_word))
-        rows.append(emojis)
+        # Получаем эмодзи и склеиваем их без пробелов (они и так широкие)
+        emojis = check_word(guess, target_word) 
+        grid_lines.append("".join(emojis))
         
-    # Remaining empty attempts (up to 6 total rows)
+    # Добиваем пустые строки (всего должно быть 6 попыток)
     remaining_attempts = 6 - len(guesses)
     for _ in range(remaining_attempts):
-        placeholder = "\u2003".join(["_"] * 5)
-        rows.append(f"<code>{placeholder}</code>")
-        rows.append("⬜ ⬜ ⬜ ⬜ ⬜")
+        spaced_underscores = wide_space.join(["_"] * 5)
+        grid_lines.append(f"<code>{spaced_underscores}</code>")
+        grid_lines.append("⬜⬜⬜⬜⬜")
         
-    return "\n".join(rows)
+    return "\n".join(grid_lines)
 
 # Simple testing if the script is run directly
 if __name__ == "__main__":
